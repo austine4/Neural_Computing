@@ -13,13 +13,9 @@ Design of recording device includes:
 
   CAD files for PCB design (.PcbDoc) (Altium)
   
-  Neural Recording Chips (Cadence) *not included yet but may be in future*
-  
-    For now, we use Intran chips
+  Neural Recording Chips (Cadence) *not included yet but may be in future* (For now, we use Intran chips)
     
-  Aquisition FPGA Board
-  
-    For now, we use Open Ethys
+  Aquisition FPGA Board (For now, we use Open Ethys)
 
 
 Software for spike sorting includes:
