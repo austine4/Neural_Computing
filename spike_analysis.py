@@ -60,7 +60,7 @@ def total_recording_time(timestamps):
 
     """
     timestamps_zeroed = timestamps - timestamps[0]
-    total_time = str(datetime.timedelta(seconds=timestamps_zeroed[-1]))
+    total_time = datetime.timedelta(seconds=timestamps_zeroed[-1])
     return total_time
 
 
@@ -85,9 +85,9 @@ def filter_data(raw_data, low_freq=600, high_freq=3000, non_causal=True, order=4
     return filtered_data
 
 
-def find_non_recording(data):
+#def find_non_recording(data):
     # find useless channels ground and others
-    return np.array([])
+#    return np.array([])
 
 
 # start channel definition as being 1,2,...,32,...
@@ -149,7 +149,48 @@ def plot_channels(timestamps, data, save_file, title='Data Over Various Channels
             chs[i].eventplot( spikes[channels[i]] , lineoffsets = 0, linelengths = np.abs(y_lim[1]-y_lim[0]), colors='r')
 
     plt.savefig(save_file + '.png')
-    plt.show()
+    #plt.show()
+
+
+def rasterize( spikes, save_file, title='Raster Plot', channels_list=[8,24,25], exclude = True):
+    num_channels = np.array(spikes, dtype='object').shape[0]
+    channels = []
+    channels_list = list(np.array(channels_list) - 1)
+
+    if exclude:
+        for i in range(0, num_channels):
+            if (channels_list.count(i) < 1):
+                channels.append(i)
+    else:
+        channels = channels_list
+    num_channels = len(channels)
+
+    left = 0.125  # the left side of the subplots of the figure
+    right = 0.9  # the right side of the subplots of the figure
+    bottom = 0.1  # the bottom of the subplots of the figure
+    top = .95  # the top of the subplots of the figure
+    wspace = 0.2  # the amount of width reserved for blank space between subplots
+    hspace = 0.001  # the amount of height reserved for white space between subplots
+
+    fig, chs = plt.subplots(nrows=num_channels, ncols=1, sharex=True, sharey=True)
+    plt.ticklabel_format(useOffset=False, style='plain')
+    plt.xlabel('Time (s)')
+    plt.suptitle(title)
+
+    plt.ylim(-1, 1)
+    plt.xlabel('Time (s)')
+    plt.suptitle(title)
+    plt.subplots_adjust(left, bottom, right, top, wspace, hspace)
+    plt.yticks(np.array([-1, 1]))
+    plt.ticklabel_format(useOffset=False, style='plain')
+
+    for i in range(0, num_channels):
+        chs[i].set_yticklabels(['', ''])
+        chs[i].set_ylabel(str(channels[i] + 1))
+        chs[i].eventplot(spikes[channels[i]], lineoffsets='False', linelengths=2, linewidths=1, colors='k')
+
+    plt.savefig(save_file + '.png')
+    #plt.show()
 
 
 def get_spikes(data, k, channels_list=[8, 24, 25], exclude=True, sampling_rate=30000, t_i=0, t_f=-1):
@@ -182,7 +223,7 @@ def get_spikes(data, k, channels_list=[8, 24, 25], exclude=True, sampling_rate=3
 
     #return all nans for excluded channels
 
-    hw = int(.0005 * sampling_rate)
+    hw = int(.0004 * sampling_rate)
 
     n = 0
     for j in channels:
@@ -207,7 +248,28 @@ def get_spikes(data, k, channels_list=[8, 24, 25], exclude=True, sampling_rate=3
                 i = i + int(hw * 2)
             i = i + 1
         n = n + 1
-
     return spikes
 
-# run spike detection and plot together mb or at least do raster plot
+
+def get_spike_stats(spikes, channels_list=[8, 24, 25], exclude=True, t_i=0, t_f=-1):
+    tot_num_channels = np.array(spikes, dtype='object').shape[0]
+    channels = []
+    channels_list = list(np.array(channels_list) - 1)
+
+    if exclude:
+        for i in range(0, tot_num_channels):
+            if channels_list.count(i) < 1:
+                channels.append(i)
+    else:
+        channels = channels_list
+
+    num_channels = len(channels)
+
+    rates = np.zeros(num_channels)
+
+    for i in range(0, num_channels):
+        rates[i] = len(spikes[channels[i]]) / (t_f - t_i)
+
+    ind = np.argmax(rates)
+
+    return [rates[ind],channels[ind]+1], np.mean(rates), np.var(rates)
