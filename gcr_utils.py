@@ -4,9 +4,13 @@ import numpy as np
 from scipy.signal import butter, filtfilt
 from sklearn.decomposition import PCA
 from scipy.interpolate import CubicSpline
-from scipy.signal import decimate, find_peaks
+from scipy.signal import decimate, find_peaks, convolve
 from sklearn.cluster import KMeans
 from openTSNE import TSNE
+import yaml
+from mpl_toolkits.mplot3d import Axes3D
+from matplotlib.animation import FuncAnimation
+from IPython.display import HTML
 
 class DataLoader:
     def __init__(self):
@@ -485,11 +489,133 @@ class SpikeSorter:
 
         return reduced_features, clusters
 
+class SpikeStatistics:
+    def __init__(self):
+        pass
+
+    def decode(self, spike_train, kernel, time_window, spike_window = 1):
+        #time window should be 2d array with start and end time in [s]
+        #conv kernel needs to be a valid function to convolve against binary spike train
+        spike_train = self.binary_representation(spike_train, time_window)
+        
+        decoded_train = {}
+        for channel, spikes in spike_train.items():
+            total_bins = int((time_window[1] - time_window[0]) * 1000 / spike_window)
+
+            decoded_train[channel] = {'sampling_rate':spike_window,
+                                      'timestamps':np.linspace(time_window[0], time_window[1], total_bins, endpoint=False),
+                                      'values':convolve(spikes, kernel, mode='same')}
+
+        return decoded_train
+    
+    # Define a Gaussian kernel
+    def gaussian_kernel(self, size, sigma):
+        x = np.arange(-size // 2 + 1, size // 2 + 1)
+        kernel = np.exp(-(x**2 / (2 * sigma**2)))
+        return 1000 * kernel / kernel.sum()
+
+    # Define an exponential kernel
+    def exponential_kernel(self, size, tau):
+        x = np.arange(0, size)
+        kernel = np.exp(-x / tau)
+        return 1000 * kernel / kernel.sum()
+
+    # Define a square kernel
+    def count_kernel(self, size):
+        kernel = np.ones(size//2)
+        kernel = np.concatenate((kernel, kernel[::-1]))
+        return 1000 * kernel / kernel.sum()
+    
+    def binary_representation(self, spike_train, time_window, spike_window=1):
+        # spike_window in [ms]
+        # time_window in [s]
+        updated_train = {}
+        channels = list(spike_train.keys())
+        total_bins = int( (time_window[1] - time_window[0]) * 1000 / spike_window )
+
+        for channel in channels:
+            spikes = np.zeros(total_bins)
+            spike_times = spike_train[channel]
+
+            for spike_time in spike_times:
+                if time_window[0] <= spike_time < time_window[1]:
+                    bin_index = int((spike_time - time_window[0]) * 1000 / spike_window)
+                    spikes[bin_index] = 1
+
+            updated_train[channel] = spikes
+
+        return updated_train
+    
+    def calculate_frequency_after_stimulation(self, spike_train, time_window, stimulation_times, window_size=0.2, spike_window=1):
+        binary_spike_train = self.binary_representation(spike_train, time_window, spike_window)
+        frequencies = {}
+        
+        for channel, spikes in binary_spike_train.items():
+            timestamps = np.linspace(time_window[0], time_window[1], len(spikes), endpoint=False)
+            spike_count_list = []
+            spike_counts_per_stim = []
+            
+            for stim in stimulation_times:
+                start_time = stim[0]
+                end_time = start_time + window_size
+                
+                # Find the indices for the window
+                start_idx = np.searchsorted(timestamps, start_time, side='left')
+                end_idx = np.searchsorted(timestamps, end_time, side='right')
+                
+                # Count the spikes in the window
+                spike_count = np.sum(spikes[start_idx:end_idx])
+                spike_counts_per_stim.append(spike_count)
+                spike_count_list.append(spike_count / window_size)  # spikes per second for each stimulation
+
+            # Calculate average frequency (spikes per second)
+            average_frequency = np.mean(spike_count_list)
+            frequencies[channel] = {
+                'frequencies_per_stimulation': spike_count_list,
+                'average_frequency': average_frequency
+            }
+            
+        return frequencies
+    
+    def get_peak_times_and_differences(self, decoded_train, stimulation_times, window_size=0.2):
+        peak_times = {}
+        peak_differences = {}
+        
+        for channel, data in decoded_train.items():
+            timestamps = data['timestamps']
+            values = data['values']
+            channel_peak_times = []
+            channel_peak_differences = []
+            
+            for stim in stimulation_times:
+                start_time = stim[1]
+                end_time = start_time + window_size
+                
+                # Find the indices for the window
+                start_idx = np.searchsorted(timestamps, start_time, side='left')
+                end_idx = np.searchsorted(timestamps, end_time, side='right')
+                
+                # Find the time of the maximum value in the window
+                if start_idx < len(values) and end_idx <= len(values):
+                    window_values = values[start_idx:end_idx]
+                    if len(window_values) > 0:
+                        max_idx = np.argmax(window_values)
+                        peak_time = np.round(timestamps[start_idx + max_idx],3)
+                        channel_peak_times.append(peak_time)
+                        # Calculate the difference between stim[1] and the peak time
+                        peak_difference = np.round(peak_time - start_time,3)
+                        channel_peak_differences.append(peak_difference)
+            
+            peak_times[channel] = channel_peak_times
+            peak_differences[channel] = channel_peak_differences
+
+        return peak_times, peak_differences
+
 class Visualizer:
     def __init__(self):
         pass
 
-    def multi_channel_plot(self, data, exclude=True, channels=[], spikes=None, use_absolute_time=True, stimulation_times=None):
+    def multi_channel_plot(self, data, exclude=True, channels=[], spikes=None, use_absolute_time=True, stimulation_times=None, time_window=None):
         all_channels = list(data.keys())
         if exclude:
             channels_to_plot = [ch for ch in all_channels if ch not in channels]
@@ -498,32 +624,49 @@ class Visualizer:
 
         plt.figure(figsize=(10, len(channels_to_plot) * 2))
         for i, channel in enumerate(channels_to_plot):
-            time = data[channel]['timestamps'] if use_absolute_time else np.arange(len(data[channel]['values'])) * data[channel]['sampling_rate']
+            timestamps = data[channel]['timestamps']
+            values = data[channel]['values']
+            sampling_rate = data[channel]['sampling_rate']
+
+            if time_window:
+                start_idx = np.searchsorted(timestamps, time_window[0], side='left')
+                end_idx = np.searchsorted(timestamps, time_window[1], side='right')
+                timestamps = timestamps[start_idx:end_idx]
+                values = values[start_idx:end_idx]
+
+            time = timestamps if use_absolute_time else np.arange(len(values)) * sampling_rate
             plt.subplot(len(channels_to_plot), 1, i + 1)
-            plt.plot(time, data[channel]['values'], label=f'Channel {channel}')
+            plt.plot(time, values, label=f'Channel {channel}')
+            
             if spikes is not None and channel in spikes:
                 for spike in spikes[channel]:
+                    if time_window and (spike < time_window[0] or spike > time_window[1]):
+                        continue
                     if use_absolute_time:
                         plt.axvline(x=spike, color='r', linestyle='--', linewidth=0.5)
                     else:
-                        spike_idx = np.where(data[channel]['timestamps'] == spike)[0][0]
-                        plt.axvline(x=spike_idx*data[channel]['sampling_rate'], color='r', linestyle='--', linewidth=0.5)
+                        spike_idx = np.where(timestamps == spike)[0][0]
+                        plt.axvline(x=spike_idx * sampling_rate, color='r', linestyle='--', linewidth=0.5)
+
             if stimulation_times is not None:
                 for stim in stimulation_times:
-                    if((stim[0] < data[channel]['timestamps'][-1] or stim[1] < data[channel]['timestamps'][-1]) and (stim[0] > data[channel]['timestamps'][0] or stim[1] > data[channel]['timestamps'][0])):
+                    if ((stim[0] < timestamps[-1] or stim[1] < timestamps[-1]) and (stim[0] > timestamps[0] or stim[1] > timestamps[0])):
+                        if time_window and (stim[0] < time_window[0] or stim[1] > time_window[1]):
+                            continue
                         if use_absolute_time:
                             plt.axvspan(stim[0], stim[1], color='k', alpha=0.5)
                         else:
-                            start = np.where(data[channel]['timestamps'] == stim[0])[0][0]*data[channel]['sampling_rate']
-                            end = np.where(data[channel]['timestamps'] == stim[1])[0][0]*data[channel]['sampling_rate']
+                            start = np.where(timestamps == stim[0])[0][0] * sampling_rate
+                            end = np.where(timestamps == stim[1])[0][0] * sampling_rate
                             plt.axvspan(start, end, color='k', alpha=0.5)
-                        
+                            
             plt.xlabel('Time (s)' if use_absolute_time else 'Relative Time (s)')
             plt.ylabel('Amplitude')
             plt.title(f'Channel {channel} Data')
             plt.legend()
         plt.tight_layout()
         plt.show()
+
 
     def raster_plot(self, spikes):
         #NOTE: NOT YET TESTED
@@ -573,7 +716,6 @@ class Visualizer:
             plt.title(f'Overlaid Spikes for Channel {channel}')
         plt.tight_layout()
         plt.show()
-
     
     def plot_representation(self, features, clusters=None):
         #2D, 3D, clusters
@@ -587,16 +729,109 @@ class Visualizer:
                     plt.scatter(features[channel][:, 0], features[channel][:, 1], c=clusters[channel], cmap='viridis', alpha=0.6)
                 else:
                     plt.scatter(features[channel][:, 0], features[channel][:, 1], alpha=0.6)
-                plt.xlabel('PC1')
-                plt.ylabel('PC2')
-                plt.title(f'PCA of Spikes for Channel {channel}')
+                plt.xlabel('F1')
+                plt.ylabel('F2')
+                plt.title(f'Feature Representation of Spikes for Channel {channel}')
             else:
-                plt.xlabel('PC1')
-                plt.ylabel('PC2')
-                plt.title(f'PCA of Spikes for Channel {channel}')
+                plt.xlabel('F1')
+                plt.ylabel('F2')
+                plt.title(f'Feature Representation of Spikes for Channel {channel}')
         plt.tight_layout()
         plt.show()
+
+    def plot_2d_electrodes(self, electrode_data):
+        """
+        Plot electrode positions on a 2D plane.
+        
+        Parameters:
+        - electrode_data: Dictionary containing electrode data loaded from the YAML file.
+        """
+        positions = electrode_data['pos']
+        size = electrode_data['size']
+        
+        plt.figure(figsize=(16, 12))
+        ax = plt.gca()
+        
+        for idx, (x, y) in enumerate(positions):
+            # Calculate the radius in plot units (assuming size is the diameter)
+            radius = size / 2
+            circle = plt.Circle((x, y), radius, edgecolor='blue', facecolor='blue', alpha=0.5)
+            ax.add_patch(circle)
+            plt.text(x, y, str(idx), fontsize=12, ha='center', va='center', color='white')
+        
+        plt.title('2D Electrode Positions')
+        plt.xlabel('X position (um)')
+        plt.ylabel('Y position (um)')
+        plt.xlim(-size, max(pos[0] for pos in positions) + size)
+        plt.ylim(-size, max(pos[1] for pos in positions) + size)
+        ax.set_aspect('equal', adjustable='box')
+        plt.show()
     
+    def show_frequency_after_stim(self, electrode_data, decoded_train, time_window):
+        #TODO: IN PROGRESS NOT WORKING YET
+        """
+        Show a 3D animation of frequency over each electrode for a given time window.
+        
+        Parameters:
+        - electrode_data: Dictionary containing electrode data loaded from the YAML file.
+        - decoded_train: Decoded spike train data.
+        - time_window: Tuple specifying the start and end times of the window (in seconds)
+        """
+        positions = electrode_data['pos']
+        size = electrode_data['size']
+        
+        fig = plt.figure(figsize=(10, 8))
+        ax = fig.add_subplot(111, projection='3d')
+        x = [pos[0] for pos in positions]
+        y = [pos[1] for pos in positions]
+        z = np.zeros(len(positions))  # Base of the bars
+        dx = dy = np.ones(len(positions)) * size  # Width and depth of the bars
+        dz = np.zeros(len(positions))  # Initial heights of the bars
+
+        bars = ax.bar3d(x, y, z, dx, dy, dz, color='b', alpha=0.5)
+        
+        start_time, end_time = time_window
+        num_frames = int((end_time - start_time) * 1000)  # Number of frames for the window
+        
+        def update(frame):
+            current_time = start_time + frame / 1000.0  # Current time in seconds
+
+            new_dz = np.zeros(len(positions))
+            for idx in range(len(positions)):
+                channel = f'channel_{idx}'
+                if channel in decoded_train:
+                    timestamps = decoded_train[channel]['timestamps']
+                    values = decoded_train[channel]['values']
+                    start_idx = np.searchsorted(timestamps, current_time, side='left')
+                    if start_idx < len(values):
+                        frequency = values[start_idx]  # Directly use the value
+                        new_dz[idx] = frequency
+            
+            ax.cla()  # Clear the axis
+            ax.bar3d(x, y, z, dx, dy, new_dz, color='b', alpha=0.5)
+            ax.set_title(f'Time {current_time:.3f} s')
+            ax.set_xlabel('X position (um)')
+            ax.set_ylabel('Y position (um)')
+            ax.set_zlabel('Frequency (Hz)')
+            ax.set_zlim(0, max(new_dz) * 1.2)  # Adjust z-axis limit for better visualization
+            return bars
+
+        anim = FuncAnimation(fig, update, frames=num_frames, interval=50, blit=False)
+        return HTML(anim.to_jshtml())
+
+
+
+# Example usage
+
+def load_yaml(file_path):
+    with open(file_path, 'r') as file:
+        data = yaml.safe_load(file)
+    return data
+
+
+
+    
+
     
     #pca histogram
         

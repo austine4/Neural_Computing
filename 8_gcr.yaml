@@ -1,0 +1,17 @@
+description: 8-channel standard
+electrode_name: gold
+dim: [2, 4] #width by height
+plane: xy
+pos:  # um
+  - [0, 1080] #0
+  - [360, 1080] #1
+  - [0, 720] #2
+  - [360, 720] #3
+  - [0, 360] #4
+  - [360, 360] #5
+  - [0, 0] #6
+  - [360, 0] #7
+shape: circle
+size: 150  # um
+pitch: [360, 360]  # um
+type: mea
