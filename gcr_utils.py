@@ -10,6 +10,7 @@ from openTSNE import TSNE
 import yaml
 from mpl_toolkits.mplot3d import Axes3D
 from matplotlib.animation import FuncAnimation
+from matplotlib import cm
 from IPython.display import HTML
 
 class DataLoader:
@@ -767,7 +768,73 @@ class Visualizer:
         ax.set_aspect('equal', adjustable='box')
         plt.show()
     
-    def show_frequency_after_stim(self, electrode_data, decoded_train, time_window):
+    def show_frequency_after_stim_2D(self, electrode_data, decoded_train, time_window, stimulation_times, stimulation_electrode):
+        """
+        Show a 2D animation of frequency over each electrode for a given time window.
+        
+        Parameters:
+        - electrode_data: Dictionary containing electrode data loaded from the YAML file.
+        - decoded_train: Decoded spike train data.
+        - time_window: Tuple specifying the start and end times of the window (in seconds)
+        """
+        positions = electrode_data['pos']
+        size = electrode_data['size']
+        
+        fig, ax = plt.subplots(figsize=(10, 8))
+        circles = []
+        texts = []
+        for idx, (x, y) in enumerate(positions):
+            radius = size / 2
+            circle = plt.Circle((x, y), radius, edgecolor='black', facecolor='white', alpha=0.5)
+            ax.add_patch(circle)
+            circles.append(circle)
+            text = ax.text(x, y, '', fontsize=12, ha='center', va='center', color='black')
+            texts.append(text)
+        
+        plt.title('2D Electrode Positions')
+        plt.xlabel('X position (um)')
+        plt.ylabel('Y position (um)')
+        plt.xlim(-size, max(pos[0] for pos in positions) + size)
+        plt.ylim(-size, max(pos[1] for pos in positions) + size)
+        ax.set_aspect('equal', adjustable='box')
+        
+        start_time, end_time = time_window
+        num_frames = int((end_time - start_time) * 1000)  # Number of frames for the window
+        cmap = cm.get_cmap('coolwarm')
+
+        # Calculate the maximum value across all channels for normalization
+        max_value = max([max(decoded_train[channel]['values']) for channel in decoded_train])
+
+        def update(frame):
+            current_time = start_time + frame / 1000.0  # Current time in seconds
+
+            for idx, (circle, text) in enumerate(zip(circles, texts)):
+                if idx in decoded_train:
+                    timestamps = decoded_train[idx]['timestamps']
+                    values = decoded_train[idx]['values']
+                    start_idx = np.searchsorted(timestamps, current_time, side='left')
+                    if start_idx < len(values):
+                        frequency = values[start_idx]  # Directly use the value
+                        normalized_frequency = frequency / max_value  # Normalize the frequency
+                        color = cmap(normalized_frequency)  # Get color from colormap
+                        circle.set_facecolor(color)
+                        text.set_text(f'{frequency:.2f}')
+                elif idx == stimulation_electrode:
+                    #check if it is stimulation time and make red during otherwise set as grey
+                    if current_time >= stimulation_times[0] and current_time <= stimulation_times[1]:
+                        circle.set_facecolor('red')
+                    else:
+                        circle.set_facecolor('white')
+            
+            ax.set_title(f'Time {current_time:.3f} s')
+            return circles + texts
+
+        anim = FuncAnimation(fig, update, frames=num_frames, interval=50, blit=False)
+
+        return HTML(anim.to_jshtml())
+
+    
+    def show_frequency_after_stim_3D(self, electrode_data, decoded_train, time_window):
         #TODO: IN PROGRESS NOT WORKING YET
         """
         Show a 3D animation of frequency over each electrode for a given time window.
@@ -795,17 +862,15 @@ class Visualizer:
         
         def update(frame):
             current_time = start_time + frame / 1000.0  # Current time in seconds
-
             new_dz = np.zeros(len(positions))
-            for idx in range(len(positions)):
-                channel = f'channel_{idx}'
+            for channel in range(len(positions)):
                 if channel in decoded_train:
                     timestamps = decoded_train[channel]['timestamps']
                     values = decoded_train[channel]['values']
                     start_idx = np.searchsorted(timestamps, current_time, side='left')
                     if start_idx < len(values):
                         frequency = values[start_idx]  # Directly use the value
-                        new_dz[idx] = frequency
+                        new_dz[channel] = frequency
             
             ax.cla()  # Clear the axis
             ax.bar3d(x, y, z, dx, dy, new_dz, color='b', alpha=0.5)
@@ -818,6 +883,18 @@ class Visualizer:
 
         anim = FuncAnimation(fig, update, frames=num_frames, interval=50, blit=False)
         return HTML(anim.to_jshtml())
+    
+    def plot_peak_by_distance(self, peak_times, electrode_data, stimulation_electrode):
+        print(electrode_data['pos'])
+        print(peak_times)
+        for idx in peak_times:
+            #compute from stimulation electrode to electrode idx
+            distance = np.linalg.norm( np.array( electrode_data['pos'][stimulation_electrode] ) - np.array( electrode_data['pos'][idx] ) )
+            plt.scatter(distance*np.ones(len(peak_times[idx])), np.array(peak_times[idx])*1000)
+        #make the plot prettier
+        plt.xlabel('Distance from Stimulation Electrode (um)')
+        plt.ylabel('Peak Time (ms)')
+        plt.title('Peak Time by Distance from Stimulation Electrode')
 
 
 
