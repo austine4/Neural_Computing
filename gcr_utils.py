@@ -12,6 +12,11 @@ from mpl_toolkits.mplot3d import Axes3D
 from matplotlib.animation import FuncAnimation
 from matplotlib import cm
 from IPython.display import HTML
+from collections import defaultdict
+import re
+import pandas as pd
+import os
+from tqdm import tqdm
 
 class DataLoader:
     def __init__(self):
@@ -578,7 +583,7 @@ class SpikeStatistics:
             
         return frequencies
     
-    def get_peak_times_and_differences(self, decoded_train, stimulation_times, window_size=0.2):
+    def get_peak_times(self, decoded_train, stimulation_times, window_size=0.2):
         peak_times = {}
         peak_differences = {}
         
@@ -610,7 +615,9 @@ class SpikeStatistics:
             peak_times[channel] = channel_peak_times
             peak_differences[channel] = channel_peak_differences
 
-        return peak_times, peak_differences
+        abs_peak_times = peak_times
+        peak_times = peak_differences
+        return abs_peak_times, peak_times
 
 class Visualizer:
     def __init__(self):
@@ -896,7 +903,52 @@ class Visualizer:
         plt.ylabel('Peak Time (ms)')
         plt.title('Peak Time by Distance from Stimulation Electrode')
 
+    def plot_frequencies_over_amplitudes(self, df):
+        def plot_session(ax, df_session, session_type):
+            # Initialize a dictionary to hold data for each channel
+            channel_data = {}
 
+            # Reset index to ensure it starts from 0
+            df_session = df_session.reset_index(drop=True)
+
+            # Extract data
+            for amp_ind in range(len(df_session)):
+                stimulation_amplitude = df_session.at[amp_ind, 'Stimulation Amplitude']
+                frequencies = df_session.at[amp_ind, 'Frequencies']
+                
+                for channel in frequencies.keys():
+                    if channel not in channel_data:
+                        channel_data[channel] = {'amplitudes': [], 'frequencies': []}
+                        
+                    average_frequency = frequencies[channel]['average_frequency']
+                    channel_data[channel]['amplitudes'].append(stimulation_amplitude)
+                    channel_data[channel]['frequencies'].append(average_frequency)
+
+            # Plot data
+            for channel, data in channel_data.items():
+                ax.plot(data['amplitudes'], data['frequencies'], marker='o', linestyle='-', label=f'Channel {channel}')
+
+            ax.set_xlabel('Stimulation Amplitude (mV)')
+            ax.set_ylabel('Average Frequency (Hz)')
+            ax.set_title(f'Frequencies over Stimulation Amplitudes for {session_type} Session')
+            ax.legend()
+            ax.grid(True)
+        
+        # Create subplots
+        fig, axes = plt.subplots(1, 2, figsize=(20, 6))
+        
+        # Filter data for pre and post sessions
+        df_pre = df[df['Session'] == 'pre']
+        df_post = df[df['Session'] == 'post']
+        
+        # Plot for pre session
+        plot_session(axes[0], df_pre, 'Pre')
+        
+        # Plot for post session
+        plot_session(axes[1], df_post, 'Post')
+
+        plt.tight_layout()
+        plt.show()
 
 # Example usage
 
@@ -905,13 +957,138 @@ def load_yaml(file_path):
         data = yaml.safe_load(file)
     return data
 
-
-
+def find_stimulation_times(spike_dict, tolerance=0.01, channel_fraction=0.33):
+    # Get the number of channels
+    num_channels = len(spike_dict)
+    min_channels = max(1, int(np.ceil(num_channels * channel_fraction)))
     
-
+    # Gather all spikes across channels
+    all_spikes = []
+    for channel, spikes in spike_dict.items():
+        all_spikes.extend([(spike, channel) for spike in spikes])
+    all_spikes.sort()  # Sort by spike time
     
-    #pca histogram
-        
+    # Group spikes that are within the tolerance
+    grouped_spikes = defaultdict(list)
+    i = 0
+    while i < len(all_spikes):
+        current_group = []
+        current_spike, current_channel = all_spikes[i]
+        current_group.append((current_spike, current_channel))
+        j = i + 1
+        while j < len(all_spikes):
+            next_spike, next_channel = all_spikes[j]
+            if next_spike - current_spike <= tolerance:
+                current_group.append((next_spike, next_channel))
+                j += 1
+            else:
+                break
+        if len(current_group) >= min_channels:
+            avg_spike_time = np.mean([spike for spike, channel in current_group])
+            grouped_spikes[avg_spike_time].extend(current_group)
+        i = j
+    
+    # Calculate the start and end times for the stimulations
+    stimulations = []
+    for avg_time in grouped_spikes:
+        start_time = avg_time - 0.01
+        end_time = avg_time + 0.02
+        #perform rounding to microsecond so 3 decimal places
+        start_time = np.round(start_time, 3)
+        end_time = np.round(end_time, 3)
+        stimulations.append((start_time, end_time))
+    
+    return stimulations
+
+#pca histogram
+
+
+# Placeholder for the analysis function, replace with actual implementation
+def analyze_file(file_path, stimulation_electrode):
+    # Instantiate the classes
+    data_loader = DataLoader()
+    filter = Filter()
+    spike_detector = SpikeDetector()
+    pdp = PostDetectionProcessing()
+    stats = SpikeStatistics()
+
+    # Load data
+    raw_data = data_loader.load_data(file_path, exclude=True, channels=[stimulation_electrode])
+    # Bandpass filter
+    data = filter.bandpass_filter(raw_data, lowcut=300, highcut=2500, order=4)
+    # Detect stimulation
+    stimulation_dict = spike_detector.threshold_detection(data=data, thresholds=[100,100], spike_time = 1000, min_consecutive_time = 0)
+    stimulation_times = find_stimulation_times(stimulation_dict, tolerance=0.01, channel_fraction=0.33)
+    # Filter stimulation
+    data = filter.stimulation_filter(data, stimulation_times)
+    # Filter to mean zero across time
+    data = filter.temporal_zeroing(data)
+
+    # Spike detection
+    spikes = spike_detector.threshold_detection(data=data, thresholds=[4,4], spike_time = 2, min_consecutive_time = .2)
+    # Eliminate obvious statistical anomalties
+    spikes = pdp.statistical_elimination(data=data, spike_train = spikes, window=2)
+    # Align spikes
+    spikes = pdp.align_spikes(data=data, spike_train=spikes, alignment = 'min', window=2, interpolation_factor = 4)
+
+    # Set Gaussian Kernel
+    sigma = 15  # ms
+    size = int(2 * (3 * sigma) + 1)  # Ensure the kernel captures most of the Gaussian
+    gaussian_kernel = stats.gaussian_kernel(size, sigma)
+    #count_kernel = stats.count_kernel(100)
+    # Get total time window
+    time_window = (data[next(iter(data))]['timestamps'][0], data[next(iter(data))]['timestamps'][-1])
+    # Decode the spike train
+    decoded_train = stats.decode(spikes, gaussian_kernel, time_window, spike_window = 1)
+    # Calculate the frequency after stimulation
+    frequencies = stats.calculate_frequency_after_stimulation(spikes, time_window, stimulation_times, window_size=0.2, spike_window=1)
+    # Get peak times and differences
+    _, peak_times = stats.get_peak_times(decoded_train, stimulation_times, window_size=0.2)
+    
+    return frequencies, peak_times
+
+def extract_info_from_filename(filename):
+    match = re.search(r'(\d+)mV at mV(\d+)', filename)
+    if match:
+        stimulation_amplitude = int(match.group(1))
+        stimulation_electrode = int(match.group(2))
+        return stimulation_amplitude, stimulation_electrode
+    return None, None
+
+def analyze_folder(folder_path, session_type):
+    data = []
+    for root, dirs, files in os.walk(folder_path):
+        files = [file for file in files if file.endswith('.abf')]
+        for file in tqdm(files, desc=f"Analyzing {session_type} session"):
+            file_path = os.path.join(root, file)
+            stimulation_amplitude, stimulation_electrode = extract_info_from_filename(file)
+            if stimulation_amplitude is not None and stimulation_electrode is not None:
+                frequencies, peak_times = analyze_file(file_path, stimulation_electrode)
+                data.append({
+                    'Session': session_type,
+                    'Stimulation Electrode': stimulation_electrode,
+                    'Stimulation Amplitude': stimulation_amplitude,
+                    'Frequencies': frequencies,
+                    'Peak Times': peak_times
+                })
+    return data
+
+def pre_and_post_analysis(pre_folder_path, post_folder_path):
+    pre_data = analyze_folder(pre_folder_path, 'pre')
+    post_data = analyze_folder(post_folder_path, 'post')
+    
+    # Combine the pre and post data
+    combined_data = pre_data + post_data
+    
+    # Create a DataFrame
+    df = pd.DataFrame(combined_data)
+    # Sort by Session and then Stimulation Amplitude
+    df = df.sort_values(by=['Session', 'Stimulation Amplitude'])
+
+    # Save the DataFrame to a CSV file
+    df.to_csv('analysis_results.csv', index=False)
+    return df
+
 
 #connected information
 #visualization of plots
