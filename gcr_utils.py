@@ -904,7 +904,7 @@ class Visualizer:
         plt.title('Peak Time by Distance from Stimulation Electrode')
 
     def plot_frequencies_over_amplitudes(self, df):
-        def plot_session(ax, df_session, session_type):
+        def plot_session(ax, df_session, session_type, x_limits, y_limits):
             # Initialize a dictionary to hold data for each channel
             channel_data = {}
 
@@ -933,19 +933,37 @@ class Visualizer:
             ax.set_title(f'Frequencies over Stimulation Amplitudes for {session_type} Session')
             ax.legend()
             ax.grid(True)
-        
-        # Create subplots
-        fig, axes = plt.subplots(1, 2, figsize=(20, 6))
+            ax.set_xlim(x_limits)
+            ax.set_ylim(y_limits)
         
         # Filter data for pre and post sessions
         df_pre = df[df['Session'] == 'pre']
         df_post = df[df['Session'] == 'post']
         
+        # Determine the limits for x and y axes
+        x_min = min(df_pre['Stimulation Amplitude'].min(), df_post['Stimulation Amplitude'].min())
+        x_max = max(df_pre['Stimulation Amplitude'].max(), df_post['Stimulation Amplitude'].max())
+        
+        y_min = float('inf')
+        y_max = float('-inf')
+        
+        for df_session in [df_pre, df_post]:
+            for frequencies in df_session['Frequencies']:
+                for channel in frequencies.keys():
+                    y_min = min(y_min, frequencies[channel]['average_frequency'])
+                    y_max = max(y_max, frequencies[channel]['average_frequency'])
+        
+        x_limits = (x_min, x_max)
+        y_limits = (y_min, y_max)
+        
+        # Create subplots
+        fig, axes = plt.subplots(1, 2, figsize=(20, 6))
+        
         # Plot for pre session
-        plot_session(axes[0], df_pre, 'Pre')
+        plot_session(axes[0], df_pre, 'Pre', x_limits, y_limits)
         
         # Plot for post session
-        plot_session(axes[1], df_post, 'Post')
+        plot_session(axes[1], df_post, 'Post', x_limits, y_limits)
 
         plt.tight_layout()
         plt.show()
@@ -983,8 +1001,8 @@ def find_stimulation_times(spike_dict, tolerance=0.01, channel_fraction=0.33):
                 j += 1
             else:
                 break
-        if len(current_group) >= min_channels:
-            avg_spike_time = np.mean([spike for spike, channel in current_group])
+        if len(set(channel for _, channel in current_group)) >= min_channels:
+            avg_spike_time = np.mean([spike for spike, _ in current_group])
             grouped_spikes[avg_spike_time].extend(current_group)
         i = j
     
@@ -993,7 +1011,7 @@ def find_stimulation_times(spike_dict, tolerance=0.01, channel_fraction=0.33):
     for avg_time in grouped_spikes:
         start_time = avg_time - 0.01
         end_time = avg_time + 0.02
-        #perform rounding to microsecond so 3 decimal places
+        # Perform rounding to microseconds, so 3 decimal places
         start_time = np.round(start_time, 3)
         end_time = np.round(end_time, 3)
         stimulations.append((start_time, end_time))
@@ -1017,7 +1035,7 @@ def analyze_file(file_path, stimulation_electrode):
     # Bandpass filter
     data = filter.bandpass_filter(raw_data, lowcut=300, highcut=2500, order=4)
     # Detect stimulation
-    stimulation_dict = spike_detector.threshold_detection(data=data, thresholds=[100,100], spike_time = 1000, min_consecutive_time = 0)
+    stimulation_dict = spike_detector.threshold_detection(data=data, thresholds=[100,100], spike_time = 5000, min_consecutive_time = 0)
     stimulation_times = find_stimulation_times(stimulation_dict, tolerance=0.01, channel_fraction=0.33)
     # Filter stimulation
     data = filter.stimulation_filter(data, stimulation_times)
@@ -1073,7 +1091,7 @@ def analyze_folder(folder_path, session_type):
                 })
     return data
 
-def pre_and_post_analysis(pre_folder_path, post_folder_path):
+def pre_and_post_analysis(pre_folder_path, post_folder_path, save_path):
     pre_data = analyze_folder(pre_folder_path, 'pre')
     post_data = analyze_folder(post_folder_path, 'post')
     
@@ -1086,7 +1104,7 @@ def pre_and_post_analysis(pre_folder_path, post_folder_path):
     df = df.sort_values(by=['Session', 'Stimulation Amplitude'])
 
     # Save the DataFrame to a CSV file
-    df.to_csv('analysis_results.csv', index=False)
+    df.to_csv(save_path, index=False)
     return df
 
 
